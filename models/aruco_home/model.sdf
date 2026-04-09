@@ -1,0 +1,15 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <model name="aruco_home">
+    <static>true</static>
+    <link name="link">
+      <visual name="visual">
+        <geometry><box><size>0.6 0.6 0.02</size></box></geometry>
+        <material><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://aruco_home/materials/textures/marker_0.png</albedo_map></metal></pbr></material>
+      </visual>
+      <collision name="collision">
+        <geometry><box><size>0.6 0.6 0.02</size></box></geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>
