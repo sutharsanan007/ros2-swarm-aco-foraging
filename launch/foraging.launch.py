@@ -25,12 +25,9 @@ def generate_launch_description():
         launch_arguments={'gz_args': f'-r {world_file}'}.items()
     )
 
-    # ── THE FIX: Static TF publisher ────────────────────────────────────
-    # RViz needs a TF tree to display any frame-stamped message.
-    # Without this, every OccupancyGrid with frame_id='world' is dropped
-    # with "discarding message because the queue is full".
-    # This node publishes: world (parent) → map (child), identity transform.
-    # RViz with Fixed Frame = 'world' will now render the pheromone grids.
+    # ── Static TF: world → map ───────────────────────────────────────────
+    # Without this, RViz drops every frame-stamped message with
+    # "discarding message because the queue is full".
     world_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -47,53 +44,61 @@ def generate_launch_description():
     # ── Spawn nodes ───────────────────────────────────────────────────────
     r1_spawn = Node(
         package='ros_gz_sim', executable='create',
-        arguments=['-world', 'foraging_arena', '-name', 'robot1',
-                   '-file', r1_model,
-                   '-x', '-1.5', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
+        arguments=[
+            '-world', 'foraging_arena', '-name', 'robot1',
+            '-file', r1_model,
+            '-x', '-1.5', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'
+        ],
         output='screen'
     )
     r2_spawn = Node(
         package='ros_gz_sim', executable='create',
-        arguments=['-world', 'foraging_arena', '-name', 'robot2',
-                   '-file', r2_model,
-                   '-x', '1.5', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
+        arguments=[
+            '-world', 'foraging_arena', '-name', 'robot2',
+            '-file', r2_model,
+            '-x', '1.5', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'
+        ],
         output='screen'
     )
     r3_spawn = Node(
         package='ros_gz_sim', executable='create',
-        arguments=['-world', 'foraging_arena', '-name', 'robot3',
-                   '-file', r3_model,
-                   '-x', '0.0', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
+        arguments=[
+            '-world', 'foraging_arena', '-name', 'robot3',
+            '-file', r3_model,
+            '-x', '0.0', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'
+        ],
         output='screen'
     )
 
     # ── Agent nodes ───────────────────────────────────────────────────────
+    # spawn_x / spawn_y tell the agent where it starts in world frame so it
+    # can convert odom-relative navigation targets back to world coordinates
+    # for pheromone drops, and vice-versa.
     r1_agent = Node(
         package='multi_robot_foraging', executable='unified_agent',
         namespace='robot1', name='unified_agent', output='screen',
-        parameters=[{'resource_id': 1}]
+        parameters=[{'resource_id': 1, 'spawn_x': -1.5, 'spawn_y': 0.0}]
     )
     r2_agent = Node(
         package='multi_robot_foraging', executable='unified_agent',
         namespace='robot2', name='unified_agent', output='screen',
-        parameters=[{'resource_id': 2}]
+        parameters=[{'resource_id': 2, 'spawn_x':  1.5, 'spawn_y': 0.0}]
     )
     r3_agent = Node(
         package='multi_robot_foraging', executable='unified_agent',
         namespace='robot3', name='unified_agent', output='screen',
-        parameters=[{'resource_id': 3}]
+        parameters=[{'resource_id': 3, 'spawn_x':  0.0, 'spawn_y': 0.0}]
     )
 
     # ── GZ ↔ ROS bridges ─────────────────────────────────────────────────
-    # Clock bridge is shared — only needs to be launched once.
+    # Single shared clock bridge
     clock_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         name='clock_bridge',
         arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
         output='screen'
     )
-
-    # Per-robot bridges: cmd_vel (ROS→GZ) + odom (GZ→ROS)
+    # Per-robot: cmd_vel (ROS→GZ) and odom (GZ→ROS)
     r1_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         name='r1_bridge',
@@ -122,7 +127,10 @@ def generate_launch_description():
         output='screen'
     )
 
-    # ── Pheromone mapper (the only swarm visualisation node needed) ───────
+    # ── Pheromone mapper ─────────────────────────────────────────────────
+    # Publishes colored MarkerArray trails (not grayscale OccupancyGrid).
+    # Robot 1 = green, Robot 2 = red, Robot 3 = blue.
+    # After sim completes: Robot 1 turns gold, merged segments turn white.
     phero_map = Node(
         package='multi_robot_foraging',
         executable='pheromone_mapper',
@@ -131,11 +139,10 @@ def generate_launch_description():
     )
 
     # ── RViz ─────────────────────────────────────────────────────────────
-    # We launch WITHOUT a config so you can set up displays interactively.
-    # In RViz:
-    #   1. Set Fixed Frame = 'world'
-    #   2. Add → By Topic → /pheromone_map   (Map display, live heatmap)
-    #   3. Add → By Topic → /final_path_map  (Map display, frozen winner)
+    # After launch, configure RViz manually once:
+    #   1. Global Options → Fixed Frame = 'world'
+    #   2. Add → By Topic → /pheromone_trails  (MarkerArray) live colored trails
+    #   3. Add → By Topic → /final_path_marker (MarkerArray) frozen final paths
     rviz = Node(
         package='rviz2',
         executable='rviz2',
@@ -146,23 +153,29 @@ def generate_launch_description():
     return LaunchDescription([
         set_model_path,
 
-        # TF tree FIRST — must exist before RViz starts
+        # TF tree first — must exist before RViz and any frame-stamped publisher
         world_tf,
 
-        # Gazebo
+        # Gazebo simulator
         gazebo,
 
-        # Bridges before agents (topics must exist before publishers start)
+        # Bridges before agents (topics must exist before nodes publish to them)
         clock_bridge,
-        r1_bridge, r2_bridge, r3_bridge,
+        r1_bridge,
+        r2_bridge,
+        r3_bridge,
 
-        # Spawn robots
-        r1_spawn, r2_spawn, r3_spawn,
+        # Spawn robots into Gazebo
+        r1_spawn,
+        r2_spawn,
+        r3_spawn,
 
         # Agent brains
-        r1_agent, r2_agent, r3_agent,
+        r1_agent,
+        r2_agent,
+        r3_agent,
 
-        # Swarm visualisation
+        # Pheromone visualisation
         phero_map,
 
         # RViz

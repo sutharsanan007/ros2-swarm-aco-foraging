@@ -10,22 +10,30 @@ class UnifiedForagingAgent(Node):
     def __init__(self):
         super().__init__('unified_agent')
 
+        # ── Parameters ──────────────────────────────────────────────────
         self.declare_parameter('resource_id', 1)
+        self.declare_parameter('spawn_x',     0.0)   # FIX: world-frame spawn offset
+        self.declare_parameter('spawn_y',     0.0)
+
         self.resource_id = self.get_parameter('resource_id').value
+        self.spawn_x     = self.get_parameter('spawn_x').value
+        self.spawn_y     = self.get_parameter('spawn_y').value
 
         # ── Publishers ──────────────────────────────────────────────────
         self.pub_vel      = self.create_publisher(Twist, 'cmd_vel',        10)
         self.pub_phero    = self.create_publisher(Point, 'pheromone_drop', 10)
         self.pub_complete = self.create_publisher(Bool,  '/sim_complete',  10)
 
-        # ── Real odometry subscriber — fixes drift completely ───────────
+        # ── Odom subscriber ─────────────────────────────────────────────
+        # Gazebo DiffDrive odom origin = spawn point (not world origin).
+        # We add spawn_x/spawn_y to convert odom coords → world coords.
         self.create_subscription(Odometry, 'odom', self.odom_cb, 10)
-        self.x          = 0.0
-        self.y          = 0.0
-        self.theta      = 0.0
+        self.world_x    = self.spawn_x   # initialise at known spawn pos
+        self.world_y    = self.spawn_y
+        self.theta      = math.pi / 2    # facing North at spawn
         self.odom_ready = False
 
-        # ── Waypoints (updated on lane-change for iter 3) ───────────────
+        # ── Per-robot waypoints (world frame) ───────────────────────────
         if self.resource_id == 1:
             self.res_x,  self.res_y  = -1.5,  0.8
             self.home_x, self.home_y = -1.5, -1.8
@@ -47,9 +55,10 @@ class UnifiedForagingAgent(Node):
 
         self.create_timer(0.05, self.control_loop)   # 20 Hz
         self.get_logger().info(
-            f'[Robot {self.resource_id}] Odom-based agent online. '
-            f'Resource=({self.res_x},{self.res_y})  '
-            f'Home=({self.home_x},{self.home_y})'
+            f'[Robot {self.resource_id}] Online | '
+            f'spawn=({self.spawn_x},{self.spawn_y}) | '
+            f'resource=({self.res_x},{self.res_y}) | '
+            f'home=({self.home_x},{self.home_y})'
         )
 
     # ================================================================== #
@@ -68,10 +77,14 @@ class UnifiedForagingAgent(Node):
     def normalize(a):
         return math.atan2(math.sin(a), math.cos(a))
 
+    # ── Odom → world coordinates ────────────────────────────────────────
     def odom_cb(self, msg):
-        """Store real Gazebo position — used for all navigation."""
-        self.x = msg.pose.pose.position.x
-        self.y = msg.pose.pose.position.y
+        """
+        Gazebo DiffDrive odom is relative to spawn point.
+        Adding spawn_x/spawn_y converts it to world frame.
+        """
+        self.world_x = msg.pose.pose.position.x + self.spawn_x
+        self.world_y = msg.pose.pose.position.y + self.spawn_y
         q = msg.pose.pose.orientation
         self.theta = math.atan2(
             2.0 * (q.w * q.z + q.x * q.y),
@@ -79,33 +92,36 @@ class UnifiedForagingAgent(Node):
         )
         self.odom_ready = True
 
-    def navigate_to(self, tx, ty, vel, arrival=0.08):
+    # ── P-controller waypoint navigator ────────────────────────────────
+    def navigate_to(self, tx, ty, vel, arrival=0.10):
         """
-        P-controller: drive to (tx, ty) using real odom position.
-        Returns True when within `arrival` metres of target.
+        Drive to world-frame (tx, ty) using real corrected odom.
+        Returns True when within `arrival` metres. Sets vel in-place.
         """
-        dx   = tx - self.x
-        dy   = ty - self.y
+        dx   = tx - self.world_x
+        dy   = ty - self.world_y
         dist = math.hypot(dx, dy)
         if dist < arrival:
+            vel.linear.x  = 0.0
+            vel.angular.z = 0.0
             return True
 
         desired = math.atan2(dy, dx)
         err     = self.normalize(desired - self.theta)
 
-        if abs(err) > 0.20:          # large heading error: turn in place
-            vel.angular.z = 0.5 * (1.0 if err > 0 else -1.0)
+        if abs(err) > 0.25:              # heading correction: turn in place
+            vel.angular.z = 0.6 * (1.0 if err > 0 else -1.0)
             vel.linear.x  = 0.0
-        else:                        # small error: drive + correct heading
-            vel.linear.x  = min(0.20, 0.6 * dist)
-            vel.angular.z = 1.5 * err
+        else:                            # drive + fine heading correction
+            vel.linear.x  = min(0.20, 0.5 * dist)
+            vel.angular.z = 1.2 * err
         return False
 
-    def drop_pheromone(self):
-        """Publish current real-world position as a pheromone breadcrumb."""
+    # ── Pheromone drop ──────────────────────────────────────────────────
+    def drop_phero(self):
         pt = Point()
-        pt.x = float(self.x)
-        pt.y = float(self.y)
+        pt.x = float(self.world_x)
+        pt.y = float(self.world_y)
         self.pub_phero.publish(pt)
 
     # ================================================================== #
@@ -116,53 +132,61 @@ class UnifiedForagingAgent(Node):
         vel     = Twist()
         elapsed = self.get_sim_time() - self.action_start_time
 
-        # ── Wait for first odom message ─────────────────────────────────
+        # ── Wait for first odom ─────────────────────────────────────────
         if self.state == 'WAIT_ODOM':
-            if self.odom_ready and elapsed > 1.5:
+            if self.odom_ready and elapsed > 1.0:
                 self.transition('BOOT_UP')
             self.pub_vel.publish(vel)
             return
 
-        # ── Boot-up stagger so robots don't all start simultaneously ────
+        # ── Stagger start so robots don't lurch simultaneously ──────────
         elif self.state == 'BOOT_UP':
-            if elapsed > (2.0 + self.resource_id * 0.5):
+            if elapsed > (1.0 + self.resource_id * 0.5):
                 if self.iteration == 3 and self.resource_id != 1:
                     self.transition('LANE_CHANGE')
                 else:
                     self.transition('DRIVE_TO_RESOURCE')
 
-        # ── Iteration-3: robots 2 & 3 merge into robot 1's optimal lane ─
+        # ── Iteration-3 lane merge (robots 2 & 3 → robot 1's lane) ─────
+        # Pheromone dropped here so the merge path is VISIBLE in RViz
         elif self.state == 'LANE_CHANGE':
-            if self.navigate_to(-1.5, 0.0, vel, arrival=0.10):
-                self.res_x,  self.res_y  = -1.5,  0.8   # inherit short path
+            self.drop_phero()   # light breadcrumb so merge is visible
+            if self.navigate_to(-1.5, 0.0, vel, arrival=0.12):
+                self.res_x,  self.res_y  = -1.5,  0.8
                 self.home_x, self.home_y = -1.5, -1.8
                 self.get_logger().info(
-                    f'\n\033[1;33m*** [Robot {self.resource_id}] '
-                    f'LANE MERGED → now sharing Robot 1 optimal path ***\033[0m\n'
+                    f'\n\033[1;33m'
+                    f'*** [Robot {self.resource_id}] LANE MERGED → '
+                    f'now on Robot 1 optimal path ***'
+                    f'\033[0m\n'
                 )
                 self.transition('DRIVE_TO_RESOURCE')
 
-        # ── Navigate to resource ────────────────────────────────────────
+        # ── Drive to resource ───────────────────────────────────────────
+        # Light pheromone on outbound trip (shows full path in RViz)
         elif self.state == 'DRIVE_TO_RESOURCE':
+            self.drop_phero()   # light outbound breadcrumb
             if self.navigate_to(self.res_x, self.res_y, vel):
                 self.get_logger().info(
-                    f'[Robot {self.resource_id}] ✓ Resource reached '
-                    f'({self.res_x:.1f}, {self.res_y:.1f})'
+                    f'[Robot {self.resource_id}] ✓ Resource '
+                    f'({self.res_x:.1f},{self.res_y:.1f})'
                 )
                 self.transition('PICK')
 
-        # ── Simulate pick-up (2 s stop) ─────────────────────────────────
+        # ── Simulate pick-up ────────────────────────────────────────────
         elif self.state == 'PICK':
             if elapsed > 2.0:
                 self.transition('DRIVE_TO_HOME')
 
-        # ── Return to home — pheromones dropped HERE (ACO-correct) ──────
+        # ── Return to home — HEAVY pheromone drop (ACO-correct) ─────────
         elif self.state == 'DRIVE_TO_HOME':
-            self.drop_pheromone()           # every 50 ms = 20 drops/sec
+            # Drop 3× per call to make return trail brighter than outbound
+            for _ in range(3):
+                self.drop_phero()
             if self.navigate_to(self.home_x, self.home_y, vel):
                 self.get_logger().info(
-                    f'[Robot {self.resource_id}] ✓ Home reached '
-                    f'({self.home_x:.1f}, {self.home_y:.1f})'
+                    f'[Robot {self.resource_id}] ✓ Home '
+                    f'({self.home_x:.1f},{self.home_y:.1f})'
                 )
                 self.transition('DEPOSIT')
 
@@ -172,62 +196,60 @@ class UnifiedForagingAgent(Node):
                 self.pheromone_total += 1.0
                 self.get_logger().info(
                     f'\n\033[1;32m'
-                    f'*** [PHEROMONE] ROBOT {self.resource_id} '
-                    f'DROPPED +1 UNIT  |  PATH TOTAL: '
-                    f'{self.pheromone_total:.1f} ***'
+                    f'*** [PHEROMONE] ROBOT {self.resource_id} +1  |  '
+                    f'TOTAL: {self.pheromone_total:.1f} ***'
                     f'\033[0m\n'
                 )
                 self.transition('REST')
 
         # ── Rest between iterations ─────────────────────────────────────
         elif self.state == 'REST':
-            if elapsed > 3.0:
+            if elapsed > 2.0:
                 if self.iteration < self.max_iterations:
                     self.iteration += 1
-                    self._announce_iteration_3()
+                    self._log_swarm_decision()
                     self.get_logger().info(
                         f'--- [Robot {self.resource_id}] '
-                        f'ITERATION {self.iteration}/{self.max_iterations} ---'
+                        f'ITERATION {self.iteration}/{self.max_iterations} START ---'
                     )
                     self.transition('BOOT_UP')
                 else:
                     self.get_logger().info(
                         f'\n\033[1;35m'
-                        f'*** [Robot {self.resource_id}] FORAGING COMPLETE ***'
+                        f'*** [Robot {self.resource_id}] ALL FORAGING COMPLETE ***'
                         f'\033[0m\n'
                     )
                     self.transition('HALT')
 
-        # ── Halted — publish sim_complete to freeze RViz heatmap ────────
+        # ── Halted — Robot 1 signals RViz to freeze the final heatmap ───
         elif self.state == 'HALT':
             if self.resource_id == 1:
-                done      = Bool()
+                done = Bool()
                 done.data = True
                 self.pub_complete.publish(done)
 
         self.pub_vel.publish(vel)
 
     # ================================================================== #
-    #  Swarm decision announcement
+    #  Swarm decision log
     # ================================================================== #
 
-    def _announce_iteration_3(self):
+    def _log_swarm_decision(self):
         if self.iteration != 3:
             return
-        elapsed_total = self.get_sim_time() - self.action_start_time
-        path1_est     = elapsed_total / 45.0
+        est = (self.get_sim_time() - self.action_start_time) / 45.0
         if self.resource_id == 1:
             self.get_logger().info(
                 f'\n\033[1;33m'
-                f'*** [SWARM COMM] ROBOT 1 PATH LEADS ({path1_est:.1f}). '
+                f'*** [SWARM COMM] ROBOT 1 PATH LEADS ({est:.1f} units). '
                 f'LEADING THE SWARM! ***'
                 f'\033[0m\n'
             )
         else:
             self.get_logger().info(
                 f'\n\033[1;33m'
-                f'*** [SWARM COMM] PATH-1 PHEROMONE ({path1_est:.1f}) IS HIGHEST. '
-                f'ROBOT {self.resource_id} REDIRECTING TO OPTIMAL PATH! ***'
+                f'*** [SWARM COMM] PATH-1 IS OPTIMAL ({est:.1f} units). '
+                f'ROBOT {self.resource_id} REDIRECTING! ***'
                 f'\033[0m\n'
             )
 
