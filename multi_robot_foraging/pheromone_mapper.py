@@ -1,28 +1,23 @@
 """
 pheromone_mapper.py
 ===================
-Renders colored pheromone trail MarkerArrays with ITERATION-BASED THICKNESS.
+/pheromone_trails  — Live fading colored LINE_STRIP per robot, per iteration.
+                     Thickness increases each iteration. Age-based alpha fading.
+                     Robot 1=Green, Robot 2=Red, Robot 3=Blue.
 
-Live trails (/pheromone_trails):
-  - Iteration 1 → thin   (0.02 m)
-  - Iteration 2 → medium (0.05 m)
-  - Iteration 3 → thick  (0.09 m)
-  Colors: Robot 1=Green, Robot 2=Red, Robot 3=Blue
+/final_path_trails — Published only after ALL 3 robots halt.
+                     Shows ONLY the convergence story on Robot 1's lane:
+                       • One thick GOLD bar  (Robot 1's full path)
+                       • One WHITE bar       (Robot 2 merged path, slightly thinner)
+                       • One CYAN bar        (Robot 3 merged path, slightly thinner)
+                     Spaced 4 cm apart in Z so all 3 are simultaneously visible.
+                     Own-lane iterations 1&2 of Robots 2 & 3 are NOT shown —
+                     the display is clean and focused on the ACO convergence.
 
-Final frozen path (/final_path_trails):  published after ALL 3 robots halt.
-  Goal: Robot 1's lane shows ALL THREE COLORS stacked so the ACO convergence
-  is visually obvious.
-
-  Layout on Robot 1's lane (x ≈ -1.5):
-    GREEN  (Robot 1, all 3 iterations) — thickest, gold in final, z=0.01
-    WHITE  (Robot 2, iteration 3 merged section) — medium thick, z=0.03
-    CYAN   (Robot 3, iteration 3 merged section) — medium thick, z=0.05
-
-  Other robot own-lane trails (iterations 1 & 2):
-    Original color, very thin (0.015 m), alpha=0.25 → "evaporated" look.
-
-Pheromone encoding (pt.z field):
-  robot_id * 10 + iteration  →  11=R1I1, 12=R1I2, 13=R1I3, 21, 22, 23, 31, 32, 33
+Encoding: pt.z = robot_id * 10 + iteration
+  11=R1I1, 12=R1I2, 13=R1I3
+  21=R2I1, 22=R2I2, 23=R2I3
+  31=R3I1, 32=R3I2, 33=R3I3
 """
 
 import rclpy
@@ -32,22 +27,23 @@ from std_msgs.msg import Int32, ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 from collections import deque
 
-# ── Colors ───────────────────────────────────────────────────────────────
-COLORS = {
-    1: (0.1, 0.95, 0.2),   # Green  (Robot 1)
-    2: (0.95, 0.2, 0.1),   # Red    (Robot 2)
-    3: (0.2,  0.4, 1.0),   # Blue   (Robot 3)
+# ── Per-robot live colors ─────────────────────────────────────────────────
+LIVE_COLOR = {
+    1: (0.10, 0.95, 0.20),   # Green
+    2: (0.95, 0.20, 0.10),   # Red
+    3: (0.20, 0.45, 1.00),   # Blue
 }
 
-# ── Line widths per iteration (live view) ───────────────────────────────
-ITER_WIDTH = {1: 0.02, 2: 0.05, 3: 0.09}
+# ── Line widths per iteration (live) ────────────────────────────────────
+ITER_W = {1: 0.025, 2: 0.055, 3: 0.095}
 
-# ── Pheromone persistence ─────────────────────────────────────────────────
-PHEROMONE_LIFETIME = 300.0   # 5 minutes — persists entire 3-iteration run
+# ── How long breadcrumbs live before evaporating ─────────────────────────
+# 300 s = 5 minutes, covers the full 3-iteration run
+LIFETIME = 300.0
 
-# ── Lane-merge detection ─────────────────────────────────────────────────
-LANE1_X     = -1.5     # Robot 1's world X lane
-LANE_THRESH =  0.30    # ±30 cm tolerance
+# ── Lane-1 detection for final merge highlight ───────────────────────────
+LANE1_X   = -1.5
+LANE_TOL  =  0.35    # ±35 cm — generous to catch slight path deviation
 
 
 class PheromoneMapper(Node):
@@ -55,70 +51,57 @@ class PheromoneMapper(Node):
     def __init__(self):
         super().__init__('pheromone_mapper')
 
-        # ── Subscriptions ────────────────────────────────────────────────
         for rn in (1, 2, 3):
             self.create_subscription(
                 Point, f'/robot{rn}/pheromone_drop', self.drop_cb, 10
             )
         self.create_subscription(Int32, '/robot_halted', self.halt_cb, 10)
 
-        # ── Publishers ───────────────────────────────────────────────────
-        self.pub_live  = self.create_publisher(MarkerArray, '/pheromone_trails',   10)
-        self.pub_final = self.create_publisher(MarkerArray, '/final_path_trails',  10)
+        self.pub_live  = self.create_publisher(MarkerArray, '/pheromone_trails',  10)
+        self.pub_final = self.create_publisher(MarkerArray, '/final_path_trails', 10)
 
-        # ── Storage: deque of (x, y, timestamp, robot_id, iteration) ────
-        # Keyed by (robot_id, iteration) for easy per-bucket access
-        # robot_id in {1,2,3}, iteration in {1,2,3}
-        self.buckets: dict[tuple, deque] = {}
+        # Buckets: (robot_id, iteration) → deque of (x, y, timestamp)
+        self.buckets: dict = {}
         for r in (1, 2, 3):
             for i in (1, 2, 3):
                 self.buckets[(r, i)] = deque()
 
-        # ── Halt counting ─────────────────────────────────────────────────
-        self.halted: set  = set()
-        self.sim_done     = False
-        self.final_array  = None
+        self.halted      = set()
+        self.sim_done    = False
+        self.final_array = None
 
-        # ── Timers ───────────────────────────────────────────────────────
-        self.create_timer(0.25, self.publish_live)   # 4 Hz
-        self.create_timer(0.5,  self.publish_final)  # 2 Hz
+        self.create_timer(0.25, self.live_tick)    # 4 Hz live
+        self.create_timer(0.50, self.final_tick)   # 2 Hz final
 
         self.get_logger().info(
-            f'PheromoneMapper online | lifetime={PHEROMONE_LIFETIME}s | '
-            f'waiting for 3/3 halts before freezing final path'
+            'PheromoneMapper online | '
+            f'lifetime={LIFETIME}s | waiting for 3/3 halts'
         )
 
     # ================================================================== #
-    #  Drop callback
+    #  Callbacks
     # ================================================================== #
 
     def drop_cb(self, msg: Point):
-        code      = int(round(msg.z))
-        robot_id  = code // 10       # e.g. 21 // 10 = 2
-        iteration = code  % 10       # e.g. 21 %  10 = 1
-
-        if robot_id not in (1, 2, 3) or iteration not in (1, 2, 3):
+        code = int(round(msg.z))
+        rid  = code // 10
+        it   = code  % 10
+        if rid not in (1,2,3) or it not in (1,2,3):
             return
-
-        now = self.get_sim_time()
-        self.buckets[(robot_id, iteration)].append((msg.x, msg.y, now))
-
-    # ================================================================== #
-    #  Halt callback — freeze only after ALL 3 robots complete
-    # ================================================================== #
+        self.buckets[(rid, it)].append((msg.x, msg.y, self.now()))
 
     def halt_cb(self, msg: Int32):
         self.halted.add(msg.data)
         self.get_logger().info(
-            f'[Mapper] Robot {msg.data} halted — {len(self.halted)}/3 done'
+            f'[Mapper] R{msg.data} halted — {len(self.halted)}/3'
         )
         if len(self.halted) >= 3 and not self.sim_done:
             self.sim_done    = True
             self.final_array = self._build_final()
             self.get_logger().info(
                 '\n\033[1;36m'
-                '*** [RVIZ] All 3 robots complete! '
-                'Final path frozen → check /final_path_trails ***'
+                '*** ALL ROBOTS COMPLETE — final convergence path frozen! '
+                'Subscribe to /final_path_trails in RViz ***'
                 '\033[0m\n'
             )
 
@@ -126,151 +109,150 @@ class PheromoneMapper(Node):
     #  Helpers
     # ================================================================== #
 
-    def get_sim_time(self):
+    def now(self):
         return self.get_clock().now().nanoseconds / 1e9
 
     def _evaporate(self):
         if self.sim_done:
             return
-        cutoff = self.get_sim_time() - PHEROMONE_LIFETIME
+        cutoff = self.now() - LIFETIME
         for dq in self.buckets.values():
             while dq and dq[0][2] < cutoff:
                 dq.popleft()
 
     @staticmethod
-    def _make_marker(stamp, ns, mid, width, frame='world') -> Marker:
-        m                    = Marker()
+    def _mk(stamp, ns, mid, width) -> Marker:
+        m = Marker()
         m.header.stamp       = stamp
-        m.header.frame_id    = frame
+        m.header.frame_id    = 'world'
         m.ns                 = ns
         m.id                 = mid
         m.type               = Marker.LINE_STRIP
         m.action             = Marker.ADD
-        m.scale.x            = width
+        m.scale.x            = float(width)
         m.pose.orientation.w = 1.0
         return m
 
     @staticmethod
-    def _color(r, g, b, a) -> ColorRGBA:
-        c = ColorRGBA(); c.r=float(r); c.g=float(g); c.b=float(b); c.a=float(a)
+    def _col(r, g, b, a) -> ColorRGBA:
+        c = ColorRGBA()
+        c.r=float(r); c.g=float(g); c.b=float(b); c.a=float(a)
         return c
 
+    @staticmethod
+    def _pt(x, y, z=0.01) -> Point:
+        p = Point(); p.x=float(x); p.y=float(y); p.z=float(z)
+        return p
+
     # ================================================================== #
-    #  Live marker builder — thickness grows each iteration
+    #  Live view — fading colored trails, thicker each iteration
     # ================================================================== #
 
     def _build_live(self) -> MarkerArray:
-        now   = self.get_sim_time()
+        now   = self.now()
         array = MarkerArray()
         stamp = self.get_clock().now().to_msg()
         mid   = 0
 
-        for robot_id in (1, 2, 3):
-            r, g, b = COLORS[robot_id]
-            for iteration in (1, 2, 3):
-                dq = self.buckets[(robot_id, iteration)]
+        for rid in (1, 2, 3):
+            r, g, b = LIVE_COLOR[rid]
+            for it in (1, 2, 3):
+                dq = self.buckets[(rid, it)]
                 if not dq:
                     continue
-
-                width = ITER_WIDTH[iteration]
-                m     = self._make_marker(stamp, f'r{robot_id}_i{iteration}',
-                                          mid, width)
-                mid  += 1
-
+                m = self._mk(stamp, f'r{rid}i{it}', mid, ITER_W[it])
+                mid += 1
                 for (px, py, t) in dq:
-                    pt     = Point(); pt.x=px; pt.y=py; pt.z=0.01*iteration
-                    age    = now - t
-                    frac   = age / PHEROMONE_LIFETIME
-                    # Cubic fade: stays bright for first 80%, fades near end
-                    alpha  = max(0.15, 1.0 - frac ** 3)
-                    m.points.append(pt)
-                    m.colors.append(self._color(r, g, b, alpha))
-
+                    age   = now - t
+                    frac  = min(1.0, age / LIFETIME)
+                    # Cubic fade: bright for first ~80%, then drops
+                    alpha = max(0.12, 1.0 - frac ** 3)
+                    m.points.append(self._pt(px, py, 0.01 * it))
+                    m.colors.append(self._col(r, g, b, alpha))
                 array.markers.append(m)
 
         return array
 
     # ================================================================== #
-    #  Final marker builder — called ONCE after all 3 robots halt
+    #  Final view — ONLY the merged convergence on Robot 1's lane
     #
-    #  Visual goal: Robot 1's lane clearly shows GREEN + WHITE + CYAN
-    #  showing that all 3 robots converged on the optimal path.
-    #  Own-lane iter 1&2 trails are thin + very faded = "evaporated".
+    #  Shows three parallel bars at the same X lane, offset in Z height:
+    #    GOLD  z=0.01  — Robot 1 (winner, thickest)
+    #    WHITE z=0.03  — Robot 2 iteration-3 merged segment
+    #    CYAN  z=0.05  — Robot 3 iteration-3 merged segment
+    #
+    #  Robots 2 & 3 own-lane segments are intentionally NOT rendered —
+    #  the final view is about convergence, not full history.
     # ================================================================== #
 
     def _build_final(self) -> MarkerArray:
         array = MarkerArray()
         stamp = self.get_clock().now().to_msg()
-        mid   = 100   # offset to avoid namespace collision with live markers
+        mid   = 200   # offset well away from live namespace
 
-        for robot_id in (1, 2, 3):
-            r, g, b = COLORS[robot_id]
+        # ── GOLD: Robot 1 full path (all 3 iterations, thickest) ─────────
+        r1_pts = []
+        for it in (1, 2, 3):
+            r1_pts.extend([(px, py) for (px, py, _) in self.buckets[(1, it)]])
 
-            for iteration in (1, 2, 3):
-                dq = self.buckets[(robot_id, iteration)]
-                if not dq:
-                    continue
+        if r1_pts:
+            m = self._mk(stamp, 'final_r1_gold', mid, 0.14)
+            mid += 1
+            for (px, py) in r1_pts:
+                m.points.append(self._pt(px, py, 0.01))
+                m.colors.append(self._col(1.0, 0.80, 0.0, 1.0))   # gold
+            array.markers.append(m)
 
-                # ── Split points: own lane vs merged lane ────────────────
-                own_pts    = []
-                merged_pts = []
-                for (px, py, _) in dq:
-                    on_lane1 = abs(px - LANE1_X) < LANE_THRESH
-                    if robot_id != 1 and on_lane1:
-                        merged_pts.append((px, py))
-                    else:
-                        own_pts.append((px, py))
+        # ── WHITE: Robot 2 iteration-3 trail on Robot 1's lane ───────────
+        r2_merge = [
+            (px, py)
+            for (px, py, _) in self.buckets[(2, 3)]
+            if abs(px - LANE1_X) < LANE_TOL
+        ]
+        # Also include Robot 2's full iter-3 trail (the whole path IS on lane 1
+        # after merge, so collect all iter-3 points)
+        r2_all_i3 = [(px, py) for (px, py, _) in self.buckets[(2, 3)]]
+        r2_show   = r2_all_i3 if r2_all_i3 else r2_merge
 
-                # ── Own lane segment ─────────────────────────────────────
-                if own_pts:
-                    if robot_id == 1:
-                        # Robot 1: GOLD, thickness grows with iteration
-                        fr, fg, fb = 1.0, 0.80, 0.0
-                        width = {1: 0.04, 2: 0.07, 3: 0.12}[iteration]
-                        alpha = {1: 0.55, 2: 0.75, 3: 1.00}[iteration]
-                        z_off = 0.01
-                    else:
-                        # Other robots own lanes: faded original color
-                        # Thinner per iteration (evaporation narrative)
-                        fr, fg, fb = r, g, b
-                        width = {1: 0.015, 2: 0.015, 3: 0.020}[iteration]
-                        alpha = {1: 0.20,  2: 0.20,  3: 0.30 }[iteration]
-                        z_off = 0.005
+        if r2_show:
+            m = self._mk(stamp, 'final_r2_white', mid, 0.085)
+            mid += 1
+            for (px, py) in r2_show:
+                m.points.append(self._pt(px, py, 0.03))
+                m.colors.append(self._col(1.0, 1.0, 1.0, 0.92))   # white
+            array.markers.append(m)
 
-                    m = self._make_marker(
-                        stamp, f'r{robot_id}_i{iteration}_own', mid, width
-                    )
-                    mid += 1
-                    for (px, py) in own_pts:
-                        pt = Point(); pt.x=px; pt.y=py; pt.z=z_off
-                        m.points.append(pt)
-                        m.colors.append(self._color(fr, fg, fb, alpha))
-                    array.markers.append(m)
+        # ── CYAN: Robot 3 iteration-3 trail on Robot 1's lane ────────────
+        r3_all_i3 = [(px, py) for (px, py, _) in self.buckets[(3, 3)]]
+        r3_merge  = [
+            (px, py)
+            for (px, py, _) in self.buckets[(3, 3)]
+            if abs(px - LANE1_X) < LANE_TOL
+        ]
+        r3_show = r3_all_i3 if r3_all_i3 else r3_merge
 
-                # ── Merged lane segment (on Robot 1's lane) ──────────────
-                # These are Robot 2 & 3 iter-3 trails that physically ran on
-                # Robot 1's lane. Show as bright WHITE / CYAN so audience
-                # can see all 3 colors converging on the winning path.
-                if merged_pts and iteration == 3:
-                    if robot_id == 2:
-                        # WHITE — Robot 2 merged
-                        mr, mg, mb = 1.0, 1.0, 1.0
-                    else:
-                        # CYAN — Robot 3 merged
-                        mr, mg, mb = 0.3, 1.0, 1.0
+        if r3_show:
+            m = self._mk(stamp, 'final_r3_cyan', mid, 0.085)
+            mid += 1
+            for (px, py) in r3_show:
+                m.points.append(self._pt(px, py, 0.05))
+                m.colors.append(self._col(0.2, 1.0, 1.0, 0.92))   # cyan
+            array.markers.append(m)
 
-                    # Thinner than Robot 1's gold (shows "joining" not "winning")
-                    m = self._make_marker(
-                        stamp, f'r{robot_id}_merged', mid, 0.055
-                    )
-                    mid += 1
-                    # Offset z so all 3 colors are visible, not stacked
-                    z_off = 0.03 if robot_id == 2 else 0.05
-                    for (px, py) in merged_pts:
-                        pt = Point(); pt.x=px; pt.y=py; pt.z=z_off
-                        m.points.append(pt)
-                        m.colors.append(self._color(mr, mg, mb, 0.90))
-                    array.markers.append(m)
+        # ── Legend markers: three horizontal bars as a visual key ─────────
+        # Placed at world(1.0, -2.5) so they don't overlap robot paths
+        legend = [
+            ('GOLD  = Robot 1 (optimal)',  0.01, (1.0, 0.80, 0.0)),
+            ('WHITE = Robot 2 (merged)',   0.03, (1.0, 1.00, 1.0)),
+            ('CYAN  = Robot 3 (merged)',   0.05, (0.2, 1.00, 1.0)),
+        ]
+        for i, (_, z_off, (lr, lg, lb)) in enumerate(legend):
+            m = self._mk(stamp, f'legend_{i}', mid, 0.06)
+            mid += 1
+            for lx in (1.0, 1.5, 2.0, 2.5):
+                m.points.append(self._pt(lx, -2.5, z_off))
+                m.colors.append(self._col(lr, lg, lb, 1.0))
+            array.markers.append(m)
 
         return array
 
@@ -278,23 +260,20 @@ class PheromoneMapper(Node):
     #  Timer callbacks
     # ================================================================== #
 
-    def publish_live(self):
+    def live_tick(self):
         if self.sim_done:
             return
         self._evaporate()
         self.pub_live.publish(self._build_live())
 
-    def publish_final(self):
+    def final_tick(self):
         if self.final_array is not None:
             self.pub_final.publish(self.final_array)
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PheromoneMapper()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    rclpy.spin(PheromoneMapper())
 
 if __name__ == '__main__':
     main()
