@@ -5,6 +5,7 @@ from launch.actions import IncludeLaunchDescription, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
+
 def generate_launch_description():
     pkg_ros_gz_sim    = get_package_share_directory('ros_gz_sim')
     custom_models_dir = os.path.expanduser(
@@ -25,8 +26,7 @@ def generate_launch_description():
         launch_arguments={'gz_args': f'-r {world_file}'}.items()
     )
 
-    # ── Static TF: world → map ───────────────────────────────────────────
-    # Required so RViz can render frame_id='world' markers without dropping.
+    # ── Static TF publisher — fixes RViz "queue full" frame drops ────────
     world_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -40,38 +40,31 @@ def generate_launch_description():
     r2_model = os.path.join(custom_models_dir, 'robot2_burger', 'model.sdf')
     r3_model = os.path.join(custom_models_dir, 'robot3_burger', 'model.sdf')
 
-    # ── Spawn positions — match hardcoded coordinates in unified_agent.py ─
-    # Robot 1: x=-1.5  resource at (-1.5, 1.5)  SHORT  path 1.5m
-    # Robot 2: x= 1.5  resource at ( 1.5, 3.0)  LONG   path 3.0m
-    # Robot 3: x= 0.0  resource at ( 0.0, 2.0)  MEDIUM path 2.0m
-    # All face North (yaw=π/2=1.5708). Home for all at y=-1.5.
+    # ── Spawn positions — must match hardcoded SPAWN_X in unified_agent ──
+    # R1: x=-1.5  R2: x=1.5  R3: x=0.0  All face North (Y=1.5708)
     r1_spawn = Node(
         package='ros_gz_sim', executable='create',
-        arguments=[
-            '-world', 'foraging_arena', '-name', 'robot1', '-file', r1_model,
-            '-x', '-1.5', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'
-        ],
+        arguments=['-world', 'foraging_arena', '-name', 'robot1',
+                   '-file', r1_model,
+                   '-x', '-1.5', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
         output='screen'
     )
     r2_spawn = Node(
         package='ros_gz_sim', executable='create',
-        arguments=[
-            '-world', 'foraging_arena', '-name', 'robot2', '-file', r2_model,
-            '-x', '1.5', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'
-        ],
+        arguments=['-world', 'foraging_arena', '-name', 'robot2',
+                   '-file', r2_model,
+                   '-x', '1.5', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
         output='screen'
     )
     r3_spawn = Node(
         package='ros_gz_sim', executable='create',
-        arguments=[
-            '-world', 'foraging_arena', '-name', 'robot3', '-file', r3_model,
-            '-x', '0.0', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'
-        ],
+        arguments=['-world', 'foraging_arena', '-name', 'robot3',
+                   '-file', r3_model,
+                   '-x', '0.0', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
         output='screen'
     )
 
-    # ── Agent nodes ───────────────────────────────────────────────────────
-    # No spawn_x/spawn_y params needed — coordinates fully hardcoded in agent.
+    # ── Agent nodes — only resource_id needed, all coords are hardcoded ──
     r1_agent = Node(
         package='multi_robot_foraging', executable='unified_agent',
         namespace='robot1', name='unified_agent', output='screen',
@@ -89,6 +82,9 @@ def generate_launch_description():
     )
 
     # ── GZ ↔ ROS bridges ─────────────────────────────────────────────────
+    # Clock bridge: Gazebo sim time → ROS (essential for get_clock().now())
+    # cmd_vel bridges: ROS agent → Gazebo physics
+    # NO odom bridge needed — we use commanded odometry, not sensor odometry
     clock_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         name='clock_bridge',
@@ -98,25 +94,19 @@ def generate_launch_description():
     r1_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         name='r1_bridge',
-        arguments=[
-            '/robot1/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
-        ],
+        arguments=['/robot1/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist'],
         output='screen'
     )
     r2_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         name='r2_bridge',
-        arguments=[
-            '/robot2/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
-        ],
+        arguments=['/robot2/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist'],
         output='screen'
     )
     r3_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         name='r3_bridge',
-        arguments=[
-            '/robot3/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
-        ],
+        arguments=['/robot3/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist'],
         output='screen'
     )
 
@@ -129,10 +119,6 @@ def generate_launch_description():
     )
 
     # ── RViz ─────────────────────────────────────────────────────────────
-    # After launch, in RViz:
-    #   1. Global Options → Fixed Frame = 'world'
-    #   2. Add → By Topic → /pheromone_trails  (MarkerArray) — live fading trails
-    #   3. Add → By Topic → /final_path_trails (MarkerArray) — frozen final result
     rviz = Node(
         package='rviz2', executable='rviz2',
         name='rviz2', output='screen'
@@ -140,9 +126,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         set_model_path,
-        world_tf,       # TF tree before everything
+        world_tf,        # TF tree first — before any frame-stamped publisher
         gazebo,
-        clock_bridge,
+        clock_bridge,    # Sim time before agents start
         r1_bridge, r2_bridge, r3_bridge,
         r1_spawn, r2_spawn, r3_spawn,
         r1_agent, r2_agent, r3_agent,
