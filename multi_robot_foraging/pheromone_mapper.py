@@ -1,20 +1,20 @@
 """
 pheromone_mapper.py
 ===================
-/pheromone_trails  — Live colored trails per robot, per iteration.
-                     Green=R1, Red=R2, Blue=R3.
-                     Thickness grows each iteration: thin→medium→thick.
-                     Age-based alpha fading (cubic curve, stays bright long).
+FIX: halt_cb now ignores duplicate robot_id messages.
+  In the previous version, Robot 1 published /robot_halted at 50 Hz in HALT
+  state, flooding the log with hundreds of "R1 halted — 1/3" messages.
+  Now unified_agent publishes ONCE per robot, but the mapper also guards
+  with a set so even if a duplicate arrives it is silently ignored.
+
+/pheromone_trails  — Live colored LINE_STRIP per robot per iteration.
+  Green=R1, Red=R2, Blue=R3. Thickness grows each iteration (thin→thick).
+  Cubic alpha fading (stays bright 80% of lifetime, fades near end).
 
 /final_path_trails — Frozen after ALL 3 robots halt.
-                     Shows ONLY the iter-3 paths (the converged result).
-                     SAME visual style as live trails: Green/Red/Blue.
-                     All three are on Robot 1's lane (x≈-1.5).
-                     This is the clean ACO convergence story.
-                     No individual pre-merge paths shown.
-
-Pheromone encoding: pt.z = robot_id*10 + iteration
-  11=R1I1, 12=R1I2, 13=R1I3, 21=R2I1, ..., 33=R3I3
+  Shows ONLY iteration-3 paths in same Green/Red/Blue colors.
+  All 3 converge onto Robot 1's lane (x≈-1.5).
+  Z-offset: R1=0.01m, R2=0.03m, R3=0.05m so all 3 visible simultaneously.
 """
 
 import rclpy
@@ -24,18 +24,14 @@ from std_msgs.msg import Int32, ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 from collections import deque
 
-# Live colors — same used in final display for consistency
 COLOR = {
     1: (0.10, 0.95, 0.20),   # Green  (Robot 1 — winner)
     2: (0.95, 0.20, 0.10),   # Red    (Robot 2)
     3: (0.20, 0.45, 1.00),   # Blue   (Robot 3)
 }
 
-# Line width per iteration (grows to show reinforcement)
-WIDTH = {1: 0.025, 2: 0.055, 3: 0.095}
-
-# 300 s = 5 minutes — covers entire 3-iteration run without evaporating
-LIFETIME = 300.0
+WIDTH    = {1: 0.025, 2: 0.055, 3: 0.095}   # grows each iteration
+LIFETIME = 300.0   # 5 minutes — covers full run
 
 
 class PheromoneMapper(Node):
@@ -52,22 +48,19 @@ class PheromoneMapper(Node):
         self.pub_live  = self.create_publisher(MarkerArray, '/pheromone_trails',   10)
         self.pub_final = self.create_publisher(MarkerArray, '/final_path_trails',  10)
 
-        # Buckets keyed by (robot_id, iteration)
-        self.buckets: dict = {
-            (r, i): deque()
-            for r in (1, 2, 3) for i in (1, 2, 3)
-        }
+        # (robot_id, iteration) → deque of (x, y, timestamp)
+        self.buckets = {(r, i): deque() for r in (1,2,3) for i in (1,2,3)}
 
+        # FIX: use a set — only count first halt message per robot
         self.halted      = set()
         self.sim_done    = False
         self.final_array = None
 
-        self.create_timer(0.25, self.live_tick)   # 4 Hz
-        self.create_timer(0.50, self.final_tick)  # 2 Hz
+        self.create_timer(0.25, self.live_tick)
+        self.create_timer(0.50, self.final_tick)
 
         self.get_logger().info(
-            f'PheromoneMapper online | lifetime={LIFETIME}s | '
-            f'waiting for 3/3 halts'
+            f'PheromoneMapper online | lifetime={LIFETIME}s'
         )
 
     # ================================================================== #
@@ -78,14 +71,18 @@ class PheromoneMapper(Node):
         code = int(round(msg.z))
         rid  = code // 10
         it   = code  % 10
-        if rid not in (1, 2, 3) or it not in (1, 2, 3):
+        if rid not in (1,2,3) or it not in (1,2,3):
             return
         self.buckets[(rid, it)].append((msg.x, msg.y, self.now()))
 
     def halt_cb(self, msg: Int32):
-        self.halted.add(msg.data)
+        rid = msg.data
+        # FIX: ignore duplicates silently — only process first halt per robot
+        if rid in self.halted:
+            return
+        self.halted.add(rid)
         self.get_logger().info(
-            f'[Mapper] R{msg.data} halted — {len(self.halted)}/3'
+            f'[Mapper] R{rid} halted — {len(self.halted)}/3'
         )
         if len(self.halted) >= 3 and not self.sim_done:
             self.sim_done    = True
@@ -128,17 +125,16 @@ class PheromoneMapper(Node):
     @staticmethod
     def _col(r, g, b, a) -> ColorRGBA:
         c = ColorRGBA()
-        c.r = float(r); c.g = float(g)
-        c.b = float(b); c.a = float(a)
+        c.r=float(r); c.g=float(g); c.b=float(b); c.a=float(a)
         return c
 
     @staticmethod
     def _pt(x, y, z=0.01) -> Point:
-        p = Point(); p.x = float(x); p.y = float(y); p.z = float(z)
+        p = Point(); p.x=float(x); p.y=float(y); p.z=float(z)
         return p
 
     # ================================================================== #
-    #  Live view — fading trails, thicker each iteration
+    #  Live view — thickness and fading per iteration
     # ================================================================== #
 
     def _build_live(self) -> MarkerArray:
@@ -158,7 +154,7 @@ class PheromoneMapper(Node):
                 for (px, py, t) in dq:
                     age   = now - t
                     frac  = min(1.0, age / LIFETIME)
-                    # Cubic curve: stays above 0.6 opacity for first 80% of life
+                    # Cubic: stays above 0.6 for first 80% of lifetime
                     alpha = max(0.12, 1.0 - frac ** 3)
                     m.points.append(self._pt(px, py, 0.01 * it))
                     m.colors.append(self._col(r, g, b, alpha))
@@ -167,38 +163,36 @@ class PheromoneMapper(Node):
         return array
 
     # ================================================================== #
-    #  Final view — ONLY iter-3 paths (all 3 converged to lane 1)
-    #
-    #  Same color scheme as live (Green/Red/Blue) so it's immediately
-    #  readable. Same thickness as iter-3 live (thickest).
-    #  Z offsets: R1=0.01, R2=0.03, R3=0.05 so all 3 are visible in RViz.
-    #  No pre-merge paths shown — the display is ONLY the convergence result.
+    #  Final view — ONLY iteration-3 paths, same colors as live
     # ================================================================== #
 
     def _build_final(self) -> MarkerArray:
+        """
+        Shows the 3 converged iteration-3 paths in Green/Red/Blue.
+        All three are physically on Robot 1's lane (x≈-1.5) after the merge.
+        Z offset separates them visually so all 3 are simultaneously visible.
+        """
         array = MarkerArray()
         stamp = self.get_clock().now().to_msg()
         mid   = 100
 
-        # Only show iteration 3 for all robots
+        z_offsets = {1: 0.01, 2: 0.03, 3: 0.05}
+
         for rid in (1, 2, 3):
-            r, g, b  = COLOR[rid]
-            dq       = self.buckets[(rid, 3)]
+            r, g, b = COLOR[rid]
+            dq      = self.buckets[(rid, 3)]
             if not dq:
                 self.get_logger().warn(
-                    f'[Mapper] No iter-3 drops for Robot {rid} — '
-                    f'check robot completed its 3rd iteration.'
+                    f'[Mapper] No iter-3 drops found for Robot {rid} in final path.'
                 )
                 continue
 
-            # Z offset so three lines are stacked visibly above each other
-            z_off = {1: 0.01, 2: 0.03, 3: 0.05}[rid]
-            # Final lines: same WIDTH as iter-3 live for visual consistency
+            # Same thickness as iter-3 live (thickest)
             m = self._mk(stamp, f'final_r{rid}', mid, WIDTH[3])
             mid += 1
             for (px, py, _) in dq:
-                m.points.append(self._pt(px, py, z_off))
-                m.colors.append(self._col(r, g, b, 1.0))   # full opacity, frozen
+                m.points.append(self._pt(px, py, z_offsets[rid]))
+                m.colors.append(self._col(r, g, b, 1.0))
             array.markers.append(m)
 
         return array

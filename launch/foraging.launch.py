@@ -26,7 +26,7 @@ def generate_launch_description():
         launch_arguments={'gz_args': f'-r {world_file}'}.items()
     )
 
-    # ── Static TF publisher — fixes RViz "queue full" frame drops ────────
+    # Static TF: world → map (required for RViz frame resolution)
     world_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -35,25 +35,26 @@ def generate_launch_description():
         output='screen'
     )
 
-    # ── Model paths ──────────────────────────────────────────────────────
+    # ── Model paths ───────────────────────────────────────────────────────
     r1_model = os.path.join(custom_models_dir, 'robot1_burger', 'model.sdf')
     r2_model = os.path.join(custom_models_dir, 'robot2_burger', 'model.sdf')
     r3_model = os.path.join(custom_models_dir, 'robot3_burger', 'model.sdf')
 
-    # ── Spawn positions — must match hardcoded SPAWN_X in unified_agent ──
-    # R1: x=-1.5  R2: x=1.5  R3: x=0.0  All face North (Y=1.5708)
+    # ── Spawn robots ──────────────────────────────────────────────────────
+    # Positions MUST match SPAWN_X in unified_agent.py
+    # R1(SHORT): -1.0  R3(MEDIUM): 0.0  R2(LONG): 1.0
     r1_spawn = Node(
         package='ros_gz_sim', executable='create',
         arguments=['-world', 'foraging_arena', '-name', 'robot1',
                    '-file', r1_model,
-                   '-x', '-1.5', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
+                   '-x', '-1.0', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
         output='screen'
     )
     r2_spawn = Node(
         package='ros_gz_sim', executable='create',
         arguments=['-world', 'foraging_arena', '-name', 'robot2',
                    '-file', r2_model,
-                   '-x', '1.5', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
+                   '-x', '1.0', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
         output='screen'
     )
     r3_spawn = Node(
@@ -64,7 +65,7 @@ def generate_launch_description():
         output='screen'
     )
 
-    # ── Agent nodes — only resource_id needed, all coords are hardcoded ──
+    # ── Agent nodes ───────────────────────────────────────────────────────
     r1_agent = Node(
         package='multi_robot_foraging', executable='unified_agent',
         namespace='robot1', name='unified_agent', output='screen',
@@ -82,9 +83,6 @@ def generate_launch_description():
     )
 
     # ── GZ ↔ ROS bridges ─────────────────────────────────────────────────
-    # Clock bridge: Gazebo sim time → ROS (essential for get_clock().now())
-    # cmd_vel bridges: ROS agent → Gazebo physics
-    # NO odom bridge needed — we use commanded odometry, not sensor odometry
     clock_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         name='clock_bridge',
@@ -110,11 +108,22 @@ def generate_launch_description():
         output='screen'
     )
 
-    # ── Pheromone mapper ──────────────────────────────────────────────────
+    # ── Pheromone mapper (RViz heatmap) ───────────────────────────────────
     phero_map = Node(
         package='multi_robot_foraging',
         executable='pheromone_mapper',
         name='pheromone_mapper',
+        output='screen'
+    )
+
+    # ── Gazebo trail node (colored dots in Gazebo window) ─────────────────
+    # Subscribes to /robotN/trail_pos — spawns colored cylinders as robots move
+    # GREEN=Robot1, RED=Robot2, BLUE=Robot3
+    # Dots grow larger each iteration to show pheromone reinforcement
+    gazebo_trail = Node(
+        package='multi_robot_foraging',
+        executable='gazebo_trail_node',
+        name='gazebo_trail_node',
         output='screen'
     )
 
@@ -126,12 +135,13 @@ def generate_launch_description():
 
     return LaunchDescription([
         set_model_path,
-        world_tf,        # TF tree first — before any frame-stamped publisher
+        world_tf,
         gazebo,
-        clock_bridge,    # Sim time before agents start
+        clock_bridge,
         r1_bridge, r2_bridge, r3_bridge,
         r1_spawn, r2_spawn, r3_spawn,
         r1_agent, r2_agent, r3_agent,
         phero_map,
+        gazebo_trail,
         rviz,
     ])

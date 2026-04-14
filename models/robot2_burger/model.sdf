@@ -1,22 +1,28 @@
 <?xml version="1.0" ?>
 <sdf version="1.8">
   <model name="robot2">
+    <!--
+      NO kinematic tags on any link.
+      physics type="ignored" in the world already provides drift-free behavior
+      (trivial integrator = direct velocity integration, no inertia/momentum).
+      Adding kinematic=true to base_link breaks DiffDrive because DiffDrive
+      propagates wheel velocity to base_link through physics constraints —
+      kinematic base_link severs that chain and stops the robot from moving.
+    -->
     <link name="base_link">
       <inertial>
         <mass>1.0</mass>
         <pose>0 0 -0.02 0 0 0</pose>
         <inertia><ixx>0.01</ixx><iyy>0.01</iyy><izz>0.01</izz></inertia>
       </inertial>
-
       <collision name="collision">
         <geometry><cylinder><radius>0.07</radius><length>0.10</length></cylinder></geometry>
       </collision>
-
       <visual name="visual">
         <geometry><cylinder><radius>0.07</radius><length>0.10</length></cylinder></geometry>
-        <material><ambient>0.2 0.2 0.2 1</ambient></material>
+        <!-- RED — Robot 1 color matches RViz trail color -->
+        <material><ambient>0.9 0.2 0.1 1</ambient><diffuse>0.9 0.2 0.1 1</diffuse></material>
       </visual>
-
       <sensor name="camera" type="camera">
         <pose>0.05 0 0.12 0 0 0</pose>
         <camera>
@@ -33,7 +39,9 @@
 
     <link name="left_wheel">
       <pose>0 0.08 -0.05 -1.5708 0 0</pose>
-      <inertial><mass>0.1</mass><inertia><ixx>0.0001</ixx><iyy>0.0001</iyy><izz>0.0001</izz></inertia></inertial>
+      <inertial><mass>0.1</mass>
+        <inertia><ixx>0.0001</ixx><iyy>0.0001</iyy><izz>0.0001</izz></inertia>
+      </inertial>
       <collision name="col">
         <geometry><cylinder><radius>0.033</radius><length>0.018</length></cylinder></geometry>
         <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
@@ -46,7 +54,9 @@
 
     <link name="right_wheel">
       <pose>0 -0.08 -0.05 -1.5708 0 0</pose>
-      <inertial><mass>0.1</mass><inertia><ixx>0.0001</ixx><iyy>0.0001</iyy><izz>0.0001</izz></inertia></inertial>
+      <inertial><mass>0.1</mass>
+        <inertia><ixx>0.0001</ixx><iyy>0.0001</iyy><izz>0.0001</izz></inertia>
+      </inertial>
       <collision name="col">
         <geometry><cylinder><radius>0.033</radius><length>0.018</length></cylinder></geometry>
         <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
@@ -59,7 +69,9 @@
 
     <link name="caster">
       <pose>-0.05 0 -0.068 0 0 0</pose>
-      <inertial><mass>0.05</mass><inertia><ixx>0.0001</ixx><iyy>0.0001</iyy><izz>0.0001</izz></inertia></inertial>
+      <inertial><mass>0.05</mass>
+        <inertia><ixx>0.0001</ixx><iyy>0.0001</iyy><izz>0.0001</izz></inertia>
+      </inertial>
       <collision name="col">
         <geometry><sphere><radius>0.015</radius></sphere></geometry>
         <surface><friction><ode><mu>0.0</mu><mu2>0.0</mu2></ode></friction></surface>
@@ -69,11 +81,20 @@
       </visual>
     </link>
 
-    <joint name="left_wheel_joint"  type="revolute"><parent>base_link</parent><child>left_wheel</child><axis><xyz>0 0 1</xyz></axis></joint>
-    <joint name="right_wheel_joint" type="revolute"><parent>base_link</parent><child>right_wheel</child><axis><xyz>0 0 1</xyz></axis></joint>
-    <joint name="caster_joint"      type="fixed">   <parent>base_link</parent><child>caster</child></joint>
+    <joint name="left_wheel_joint"  type="revolute">
+      <parent>base_link</parent><child>left_wheel</child>
+      <axis><xyz>0 0 1</xyz></axis>
+    </joint>
+    <joint name="right_wheel_joint" type="revolute">
+      <parent>base_link</parent><child>right_wheel</child>
+      <axis><xyz>0 0 1</xyz></axis>
+    </joint>
+    <joint name="caster_joint" type="fixed">
+      <parent>base_link</parent><child>caster</child>
+    </joint>
 
-    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+    <plugin filename="gz-sim-diff-drive-system"
+            name="gz::sim::systems::DiffDrive">
       <left_joint>left_wheel_joint</left_joint>
       <right_joint>right_wheel_joint</right_joint>
       <wheel_separation>0.16</wheel_separation>

@@ -31,6 +31,7 @@ setup(
             'aruco_detector = multi_robot_foraging.aruco_detector:main',
             'pheromone_manager = multi_robot_foraging.pheromone_manager:main',
             'pheromone_mapper = multi_robot_foraging.pheromone_mapper:main',
+            'gazebo_trail_node = multi_robot_foraging.gazebo_trail_node:main',
             'foraging_controller = multi_robot_foraging.foraging_controller:main',
         ],
     },
