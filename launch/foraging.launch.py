@@ -26,7 +26,7 @@ def generate_launch_description():
         launch_arguments={'gz_args': f'-r {world_file}'}.items()
     )
 
-    # Static TF: world → map (required for RViz frame resolution)
+    # Static TF: world → map  (required for RViz frame resolution)
     world_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -35,37 +35,51 @@ def generate_launch_description():
         output='screen'
     )
 
-    # ── Model paths ───────────────────────────────────────────────────────
     r1_model = os.path.join(custom_models_dir, 'robot1_burger', 'model.sdf')
     r2_model = os.path.join(custom_models_dir, 'robot2_burger', 'model.sdf')
     r3_model = os.path.join(custom_models_dir, 'robot3_burger', 'model.sdf')
 
-    # ── Spawn robots ──────────────────────────────────────────────────────
-    # Positions MUST match SPAWN_X in unified_agent.py
-    # R1(SHORT): -1.0  R3(MEDIUM): 0.0  R2(LONG): 1.0
+    # ── HUB-AND-SPOKE SPAWN POSITIONS ────────────────────────────────────
+    #
+    # All robots start at/near the hub (0,0), facing OUTWARD along their arm.
+    # Small offset along their arm so they don't visually overlap at start.
+    #
+    # Robot 1 (GREEN): (0.0,  0.15)  facing NORTH  yaw=1.5708 (π/2)
+    # Robot 2 (RED):   (0.15, 0.0)   facing EAST   yaw=0.0
+    # Robot 3 (BLUE):  (-0.15, 0.0)  facing WEST   yaw=3.1416 (π)
+    #
+    # Yaw convention in Gazebo (-Y flag): Z-up right-hand rule
+    #   North = π/2 = 1.5708
+    #   East  = 0   = 0.0
+    #   West  = π   = 3.1416
     r1_spawn = Node(
         package='ros_gz_sim', executable='create',
-        arguments=['-world', 'foraging_arena', '-name', 'robot1',
-                   '-file', r1_model,
-                   '-x', '-1.0', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
+        arguments=[
+            '-world', 'foraging_arena', '-name', 'robot1',
+            '-file', r1_model,
+            '-x', '0.0', '-y', '0.15', '-z', '0.05', '-Y', '1.5708'
+        ],
         output='screen'
     )
     r2_spawn = Node(
         package='ros_gz_sim', executable='create',
-        arguments=['-world', 'foraging_arena', '-name', 'robot2',
-                   '-file', r2_model,
-                   '-x', '1.0', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
+        arguments=[
+            '-world', 'foraging_arena', '-name', 'robot2',
+            '-file', r2_model,
+            '-x', '0.15', '-y', '0.0', '-z', '0.05', '-Y', '0.0'
+        ],
         output='screen'
     )
     r3_spawn = Node(
         package='ros_gz_sim', executable='create',
-        arguments=['-world', 'foraging_arena', '-name', 'robot3',
-                   '-file', r3_model,
-                   '-x', '0.0', '-y', '0.0', '-z', '0.1', '-Y', '1.5708'],
+        arguments=[
+            '-world', 'foraging_arena', '-name', 'robot3',
+            '-file', r3_model,
+            '-x', '-0.15', '-y', '0.0', '-z', '0.05', '-Y', '3.1416'
+        ],
         output='screen'
     )
 
-    # ── Agent nodes ───────────────────────────────────────────────────────
     r1_agent = Node(
         package='multi_robot_foraging', executable='unified_agent',
         namespace='robot1', name='unified_agent', output='screen',
@@ -82,13 +96,14 @@ def generate_launch_description():
         parameters=[{'resource_id': 3}]
     )
 
-    # ── GZ ↔ ROS bridges ─────────────────────────────────────────────────
+    # Clock bridge: Gazebo sim time → ROS
     clock_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         name='clock_bridge',
         arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
         output='screen'
     )
+    # cmd_vel bridges: ROS Twist → Gazebo (DiffDrive reads this)
     r1_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         name='r1_bridge',
@@ -108,7 +123,7 @@ def generate_launch_description():
         output='screen'
     )
 
-    # ── Pheromone mapper (RViz heatmap) ───────────────────────────────────
+    # RViz pheromone heatmap
     phero_map = Node(
         package='multi_robot_foraging',
         executable='pheromone_mapper',
@@ -116,10 +131,8 @@ def generate_launch_description():
         output='screen'
     )
 
-    # ── Gazebo trail node (colored dots in Gazebo window) ─────────────────
-    # Subscribes to /robotN/trail_pos — spawns colored cylinders as robots move
-    # GREEN=Robot1, RED=Robot2, BLUE=Robot3
-    # Dots grow larger each iteration to show pheromone reinforcement
+    # Gazebo trail node — colored dot markers spawned in Gazebo
+    # Queue-drains at 1 dot per 0.3s — reliable and non-blocking
     gazebo_trail = Node(
         package='multi_robot_foraging',
         executable='gazebo_trail_node',
@@ -127,7 +140,6 @@ def generate_launch_description():
         output='screen'
     )
 
-    # ── RViz ─────────────────────────────────────────────────────────────
     rviz = Node(
         package='rviz2', executable='rviz2',
         name='rviz2', output='screen'

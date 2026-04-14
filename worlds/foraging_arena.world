@@ -2,7 +2,6 @@
 <sdf version="1.8">
   <world name="foraging_arena">
 
-    <!-- physics type="ignored" = trivial kinematic integrator, no inertia/drift -->
     <physics name="1ms" type="ignored">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -15,25 +14,20 @@
       <render_engine>ogre2</render_engine>
     </plugin>
 
-    <!-- Bright white lighting — two directional lights to eliminate dark shadows -->
+    <!-- Bright uniform white lighting, no shadows -->
     <light type="directional" name="sun">
-      <cast_shadows>true</cast_shadows>
+      <cast_shadows>false</cast_shadows>
       <pose>0 0 10 0 0 0</pose>
       <diffuse>1.0 1.0 1.0 1</diffuse>
-      <specular>0.5 0.5 0.5 1</specular>
-      <attenuation>
-        <range>1000</range><constant>0.9</constant>
-        <linear>0.01</linear><quadratic>0.001</quadratic>
-      </attenuation>
-      <direction>-0.5 0.1 -0.9</direction>
+      <specular>0.3 0.3 0.3 1</specular>
+      <direction>0 0 -1</direction>
     </light>
-
-    <light type="directional" name="fill_light">
+    <light type="directional" name="fill">
       <cast_shadows>false</cast_shadows>
       <pose>0 0 8 0 0 0</pose>
-      <diffuse>0.8 0.8 0.8 1</diffuse>
-      <specular>0.2 0.2 0.2 1</specular>
-      <direction>0.5 -0.1 -0.9</direction>
+      <diffuse>0.7 0.7 0.7 1</diffuse>
+      <specular>0.1 0.1 0.1 1</specular>
+      <direction>0 0.2 -0.98</direction>
     </light>
 
     <!-- WHITE ground plane -->
@@ -41,58 +35,45 @@
       <static>true</static>
       <link name="link">
         <collision name="collision">
-          <geometry><plane><normal>0 0 1</normal><size>15 15</size></plane></geometry>
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
         </collision>
         <visual name="visual">
-          <geometry><plane><normal>0 0 1</normal><size>15 15</size></plane></geometry>
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
           <material>
             <ambient>1.0 1.0 1.0 1</ambient>
             <diffuse>1.0 1.0 1.0 1</diffuse>
-            <specular>0.1 0.1 0.1 1</specular>
+            <specular>0.0 0.0 0.0 1</specular>
           </material>
         </visual>
       </link>
     </model>
 
-    <!--
-      COMPACT ARENA LAYOUT (matches unified_agent.py exactly):
-
-        RES2(1.0,2.0)  RES3(0.0,1.5)  RES1(-1.0,1.0)
-             |               |               |
-        SP2(1.0,0.0)   SP3(0.0,0.0)   SP1(-1.0,0.0)   ← spawn row
-             |               |               |
-        HOME2(1.0,-1.0) HOME3(0.0,-1.0) HOME1(-1.0,-1.0)
-
-      Pose: x y z roll pitch yaw
-      pitch=1.5708 yaw=1.5708 → marker standing upright, camera-visible
-    -->
-
-    <!-- Resource for Robot 1 — SHORT path — at (-1.0, 1.0) -->
-    <include>
-      <uri>model://aruco_res1</uri>
-      <name>resource_1</name>
-      <pose>-1.0 1.0 0.1 0 1.5708 1.5708</pose>
-    </include>
-
-    <!-- Resource for Robot 3 — MEDIUM path — at (0.0, 1.5) -->
-    <include>
-      <uri>model://aruco_res2</uri>
-      <name>resource_3</name>
-      <pose>0.0 1.5 0.1 0 1.5708 1.5708</pose>
-    </include>
-
-    <!-- Resource for Robot 2 — LONG path — at (1.0, 2.0) -->
-    <include>
-      <uri>model://aruco_res3</uri>
-      <name>resource_2</name>
-      <pose>1.0 2.0 0.1 0 1.5708 1.5708</pose>
-    </include>
-
-    <!-- Home base — shared loading dock — at (0.0, -1.0) -->
+    <!-- HOME base marker at hub center (0, 0) -->
     <include>
       <uri>model://aruco_home</uri>
       <name>home_base</name>
-      <pose>0.0 -1.0 0.3 0 1.5708 1.5708</pose>
+      <pose>0.0 0.0 0.3 0 1.5708 1.5708</pose>
+    </include>
+
+    <!-- Resource 1 — Robot 1 SHORT path — NORTH at (0.0, 1.5) -->
+    <include>
+      <uri>model://aruco_res1</uri>
+      <name>resource_1</name>
+      <pose>0.0 1.5 0.1 0 1.5708 0.0</pose>
+    </include>
+
+    <!-- Resource 2 — Robot 2 MEDIUM path — EAST at (2.5, 0.0) -->
+    <include>
+      <uri>model://aruco_res2</uri>
+      <name>resource_2</name>
+      <pose>2.5 0.0 0.1 0 1.5708 1.5708</pose>
+    </include>
+
+    <!-- Resource 3 — Robot 3 LONG path — WEST at (-3.5, 0.0) -->
+    <include>
+      <uri>model://aruco_res3</uri>
+      <name>resource_3</name>
+      <pose>-3.5 0.0 0.1 0 1.5708 1.5708</pose>
     </include>
 
   </world>

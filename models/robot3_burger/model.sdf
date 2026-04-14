@@ -2,12 +2,10 @@
 <sdf version="1.8">
   <model name="robot3">
     <!--
-      NO kinematic tags on any link.
-      physics type="ignored" in the world already provides drift-free behavior
-      (trivial integrator = direct velocity integration, no inertia/momentum).
-      Adding kinematic=true to base_link breaks DiffDrive because DiffDrive
-      propagates wheel velocity to base_link through physics constraints —
-      kinematic base_link severs that chain and stops the robot from moving.
+    Robot 3 — LONG path — BLUE body color.
+    Spawns at hub (0.0, 0.15) facing NORTH.
+    Resource at (0.0, 1.5). Home at (0.0, 0.0).
+    All 3 iterations: drive forward North, reverse South. Zero turns.
     -->
     <link name="base_link">
       <inertial>
@@ -18,10 +16,19 @@
       <collision name="collision">
         <geometry><cylinder><radius>0.07</radius><length>0.10</length></cylinder></geometry>
       </collision>
-      <visual name="visual">
+      <!-- GREEN body — matches RViz pheromone trail and Gazebo dot colors -->
+      <visual name="body">
         <geometry><cylinder><radius>0.07</radius><length>0.10</length></cylinder></geometry>
-        <!-- BLUE — Robot 1 color matches RViz trail color -->
-        <material><ambient>0.2 0.4 0.9 1</ambient><diffuse>0.2 0.4 0.9 1</diffuse></material>
+        <material>
+          <ambient>0.15 0.35 0.90 1</ambient>
+          <diffuse>0.15 0.35 0.90 1</diffuse>
+        </material>
+      </visual>
+      <!-- Forward direction indicator arrow -->
+      <visual name="arrow">
+        <pose>0.07 0 0.02 0 0 0</pose>
+        <geometry><box><size>0.04 0.015 0.008</size></box></geometry>
+        <material><ambient>0.0 0.05 0.45 1</ambient><diffuse>0.0 0.05 0.45 1</diffuse></material>
       </visual>
       <sensor name="camera" type="camera">
         <pose>0.05 0 0.12 0 0 0</pose>
@@ -48,7 +55,7 @@
       </collision>
       <visual name="vis">
         <geometry><cylinder><radius>0.033</radius><length>0.018</length></cylinder></geometry>
-        <material><ambient>0 0 0 1</ambient></material>
+        <material><ambient>0.1 0.1 0.1 1</ambient></material>
       </visual>
     </link>
 
@@ -63,7 +70,7 @@
       </collision>
       <visual name="vis">
         <geometry><cylinder><radius>0.033</radius><length>0.018</length></cylinder></geometry>
-        <material><ambient>0 0 0 1</ambient></material>
+        <material><ambient>0.1 0.1 0.1 1</ambient></material>
       </visual>
     </link>
 
