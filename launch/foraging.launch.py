@@ -19,11 +19,12 @@ def generate_launch_description():
         name='GZ_SIM_RESOURCE_PATH', value=custom_models_dir
     )
 
+    # THE FIX: Changed '-v 1' to '-v 0' to completely mute [Err] level logs
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py')
         ),
-        launch_arguments={'gz_args': f'-r {world_file}'}.items()
+        launch_arguments={'gz_args': f'-r -v 0 {world_file}'}.items()
     )
 
     # Static TF: world → map  (required for RViz frame resolution)
@@ -40,18 +41,6 @@ def generate_launch_description():
     r3_model = os.path.join(custom_models_dir, 'robot3_burger', 'model.sdf')
 
     # ── HUB-AND-SPOKE SPAWN POSITIONS ────────────────────────────────────
-    #
-    # All robots start at/near the hub (0,0), facing OUTWARD along their arm.
-    # Small offset along their arm so they don't visually overlap at start.
-    #
-    # Robot 1 (GREEN): (0.0,  0.15)  facing NORTH  yaw=1.5708 (π/2)
-    # Robot 2 (RED):   (0.15, 0.0)   facing EAST   yaw=0.0
-    # Robot 3 (BLUE):  (-0.15, 0.0)  facing WEST   yaw=3.1416 (π)
-    #
-    # Yaw convention in Gazebo (-Y flag): Z-up right-hand rule
-    #   North = π/2 = 1.5708
-    #   East  = 0   = 0.0
-    #   West  = π   = 3.1416
     r1_spawn = Node(
         package='ros_gz_sim', executable='create',
         arguments=[
@@ -59,7 +48,7 @@ def generate_launch_description():
             '-file', r1_model,
             '-x', '0.0', '-y', '0.15', '-z', '0.05', '-Y', '1.5708'
         ],
-        output='screen'
+        output='log'
     )
     r2_spawn = Node(
         package='ros_gz_sim', executable='create',
@@ -68,7 +57,7 @@ def generate_launch_description():
             '-file', r2_model,
             '-x', '0.15', '-y', '0.0', '-z', '0.05', '-Y', '0.0'
         ],
-        output='screen'
+        output='log'
     )
     r3_spawn = Node(
         package='ros_gz_sim', executable='create',
@@ -77,7 +66,7 @@ def generate_launch_description():
             '-file', r3_model,
             '-x', '-0.15', '-y', '0.0', '-z', '0.05', '-Y', '3.1416'
         ],
-        output='screen'
+        output='log'
     )
 
     r1_agent = Node(
@@ -132,7 +121,6 @@ def generate_launch_description():
     )
 
     # Gazebo trail node — colored dot markers spawned in Gazebo
-    # Queue-drains at 1 dot per 0.3s — reliable and non-blocking
     gazebo_trail = Node(
         package='multi_robot_foraging',
         executable='gazebo_trail_node',

@@ -14,7 +14,6 @@
       <render_engine>ogre2</render_engine>
     </plugin>
 
-    <!-- Bright uniform white lighting, no shadows -->
     <light type="directional" name="sun">
       <cast_shadows>false</cast_shadows>
       <pose>0 0 10 0 0 0</pose>
@@ -30,7 +29,6 @@
       <direction>0 0.2 -0.98</direction>
     </light>
 
-    <!-- WHITE ground plane -->
     <model name="ground_plane">
       <static>true</static>
       <link name="link">
@@ -48,32 +46,28 @@
       </link>
     </model>
 
-    <!-- HOME base marker at hub center (0, 0) -->
     <include>
       <uri>model://aruco_home</uri>
       <name>home_base</name>
       <pose>0.0 0.0 0.3 0 1.5708 1.5708</pose>
     </include>
 
-    <!-- Resource 1 — Robot 1 SHORT path — NORTH at (0.0, 1.5) -->
     <include>
       <uri>model://aruco_res1</uri>
       <name>resource_1</name>
-      <pose>0.0 1.5 0.1 0 1.5708 0.0</pose>
+      <pose>0.0 1.5 0.1 0 1.5708 1.5708</pose>
     </include>
 
-    <!-- Resource 2 — Robot 2 MEDIUM path — EAST at (2.5, 0.0) -->
     <include>
       <uri>model://aruco_res2</uri>
       <name>resource_2</name>
-      <pose>2.5 0.0 0.1 0 1.5708 1.5708</pose>
+      <pose>2.5 0.0 0.1 0 1.5708 0.0</pose>
     </include>
 
-    <!-- Resource 3 — Robot 3 LONG path — WEST at (-3.5, 0.0) -->
     <include>
       <uri>model://aruco_res3</uri>
       <name>resource_3</name>
-      <pose>-3.5 0.0 0.1 0 1.5708 1.5708</pose>
+      <pose>-3.5 0.0 0.1 0 1.5708 0.0</pose>
     </include>
 
   </world>
